@@ -1,0 +1,9 @@
+{
+  "name": "cc-simplify",
+  "version": "0.1.0",
+  "description": "Slim verbose built-in tool and skill descriptions with on-demand full doc loading via get_doc",
+  "author": {
+    "name": "billxc"
+  },
+  "license": "MIT"
+}

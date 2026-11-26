@@ -1,0 +1,12 @@
+{
+  "name": "cc-simplify",
+  "owner": {
+    "name": "billxc"
+  },
+  "plugins": [
+    {
+      "name": "cc-simplify",
+      "source": "./"
+    }
+  ]
+}
