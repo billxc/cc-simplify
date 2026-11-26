@@ -1,7 +1,10 @@
 {
   "name": "cc-simplify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Slim verbose built-in tool and skill descriptions with on-demand full doc loading via get_doc",
+  "engines": {
+    "claude-code": ">=2.1.323"
+  },
   "author": {
     "name": "billxc"
   },

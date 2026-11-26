@@ -11,6 +11,8 @@ A Claude Code function-hooks plugin that slims verbose tool and skill descriptio
 
 ## Install
 
+Requires **Claude Code `>= 2.1.323`** (enforced via `engines["claude-code"]` and runtime version check; older builds safely pass through untouched).
+
 In a Claude Code terminal session:
 
 ```text

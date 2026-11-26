@@ -1,6 +1,6 @@
 import type { On, ToolInfo } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import { DOC_TOOL_NAME, hashText, type SlimConfig } from './register'
+import { DOC_TOOL_NAME, hashText, MIN_CC_VERSION, type SlimConfig } from './register'
 
 const HOME = 'C:/Users/tester'
 const SLIM_PATH = `${HOME}/.claude/cc-simplify/slim.json`
@@ -10,10 +10,15 @@ function norm(p: string): string {
   return p.replace(/\\/g, '/')
 }
 
-function setupMockFs(on: On, initialFiles: Record<string, string>): Record<string, string> {
+function setupMockFs(
+  on: On,
+  initialFiles: Record<string, string>,
+  ccVersion = MIN_CC_VERSION,
+): Record<string, string> {
   const files: Record<string, string> = {}
   for (const [k, v] of Object.entries(initialFiles)) files[norm(k)] = v
   mock.env(on, { USERPROFILE: HOME, HOME })
+  on('session.version', () => ({ value: { version: ccVersion } }))
   on('fs.read', (_, e) => {
     const text = files[norm(e.path)]
     if (text === undefined) return { deny: `ENOENT: ${e.path}` }
@@ -247,4 +252,31 @@ test('prompt.compose and skill_listing slim warmed single- and multi-line skills
     targets: ['skill:claude-api'],
   } as never)
   expect(docRes.result).toContain('SKIP only when another provider is named.')
+})
+
+test('older Claude Code version notifies user and safely passes everything through untouched', async ($, on) => {
+  mock.store(on)
+  const fullWorkflow = 'Full original Workflow instructions.'
+  const cfg: SlimConfig = {
+    version: 1,
+    tools: { Workflow: { hash: hashText(fullWorkflow), summary: 'Slim Workflow.' } },
+  }
+  setupMockFs(on, { [SLIM_PATH]: JSON.stringify(cfg) }, '2.1.322')
+  const toasts: string[] = []
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('tool.describe', (_, e) => ({ description: e.description }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(toasts.some(t => t.includes(`>= ${MIN_CC_VERSION}`))).toBe(true)
+
+  const res = await $.tool.describe({
+    tool: 'Workflow',
+    description: fullWorkflow,
+    provider: { plugin: 'engine', tier: 'core' },
+  })
+  expect(res.description).toBe(fullWorkflow)
 })

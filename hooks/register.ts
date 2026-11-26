@@ -1,6 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 
 export const DOC_TOOL_NAME = 'get_doc'
+export const MIN_CC_VERSION = '2.1.323'
 
 const DOC_TOOL_MATCH = /^get_doc$/
 const SKILL_LIST_MARKER = 'The following skills are available for use with the Skill tool:'
@@ -34,13 +35,52 @@ export type CapturedSnapshot = {
   skills: Record<string, CapturedEntry>
 }
 
+type VersionCheck = {
+  ok: boolean
+  version?: string
+}
+
 type RuntimeState = {
+  versionPromise: Promise<VersionCheck> | null
   configPromise: Promise<SlimConfig | null> | null
   capturedCache: CapturedSnapshot | null
   writeChain: Promise<void>
   notifiedUnwarmed: boolean
   driftedNames: Set<string>
   lastDriftToastCount: number
+}
+
+function parseSemver(version: string): [number, number, number] | null {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+export function isVersionAtLeast(current: string, min: string): boolean {
+  const a = parseSemver(current)
+  const b = parseSemver(min)
+  if (!a || !b) return false
+  for (let i = 0; i < 3; i++) {
+    const ai = a[i] ?? 0
+    const bi = b[i] ?? 0
+    if (ai !== bi) return ai > bi
+  }
+  return true
+}
+
+function checkVersion($: EngineInterface, state: RuntimeState): Promise<VersionCheck> {
+  if (!state.versionPromise) {
+    state.versionPromise = (async () => {
+      try {
+        const info = await $.session.version()
+        const v = info?.version ?? ''
+        return { ok: isVersionAtLeast(v, MIN_CC_VERSION), version: v || undefined }
+      } catch {
+        return { ok: false }
+      }
+    })()
+  }
+  return state.versionPromise
 }
 
 /** Deterministic 64-bit (dual FNV-1a) hex hash for drift detection. */
@@ -320,6 +360,7 @@ async function lookupDoc(
 
 export const register: Register = on => {
   const state: RuntimeState = {
+    versionPromise: null,
     configPromise: null,
     capturedCache: null,
     writeChain: Promise.resolve(),
@@ -328,8 +369,15 @@ export const register: Register = on => {
     lastDriftToastCount: 0,
   }
 
-  // Guide user to run warmup when no local slim list exists yet.
+  // Verify Claude Code version first; otherwise guide user to run warmup when no slim list exists.
   on('session.start', async ($, e, next) => {
+    const ver = await checkVersion($, state)
+    if (!ver.ok) {
+      $.ui.toast(
+        `cc-simplify requires Claude Code >= ${MIN_CC_VERSION} (found ${ver.version ?? 'older'}) — please update Claude Code`,
+      )
+      return next(e)
+    }
     const cfg = await loadConfig($, state)
     if (!hasAnySlimEntry(cfg) && !state.notifiedUnwarmed) {
       state.notifiedUnwarmed = true
@@ -352,12 +400,11 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Keep all tools intact; append read-only get_doc only when a warmed slim list is active.
+  // Keep all tools intact; always append read-only get_doc on supported CC versions (survives /clear after first warmup).
   on('tool.list', async ($, e, next) => {
     const listed = await next(e)
     if (listed.value === undefined) return listed
-    const cfg = await loadConfig($, state)
-    if (!hasAnySlimEntry(cfg)) return listed
+    if (!(await checkVersion($, state)).ok) return listed
     if (listed.value.some(t => t.name === DOC_TOOL_NAME)) return listed
 
     return {
@@ -391,6 +438,7 @@ export const register: Register = on => {
   // Capture all core tool descriptions and slim those whose hash matches slim.json.
   on('tool.describe', async ($, e, next) => {
     const res = await next(e)
+    if (!(await checkVersion($, state)).ok) return res
     if (e.tool === DOC_TOOL_NAME || e.provider?.tier !== 'core' || !res.description) {
       return res
     }
@@ -421,6 +469,7 @@ export const register: Register = on => {
   // Slim warmed skill entries in both system prompt sections and skill_listing attachments.
   on('prompt.compose', async ($, e, next) => {
     const res = await next(e)
+    if (!(await checkVersion($, state)).ok) return res
     let changed = false
     const sections = await Promise.all(
       res.sections.map(async section => {
@@ -436,15 +485,16 @@ export const register: Register = on => {
 
   on('prompt.attachment', { type: 'skill_listing' }, async ($, e, next) => {
     const res = await next(e)
+    if (!(await checkVersion($, state)).ok) return res
     if (!res.text || !res.text.includes(SKILL_LIST_MARKER)) return res
     const nextText = await slimSkillListing($, state, res.text)
     return nextText === res.text ? res : { ...res, text: nextText }
   })
 
-  // Serve persisted originals via exact tool.call matcher; pass through if unwarmed.
+  // Serve persisted originals via exact tool.call matcher; pass through on unsupported CC versions.
   on('tool.call', { tool: DOC_TOOL_MATCH }, async ($, e, next) => {
+    if (!(await checkVersion($, state)).ok) return next(e)
     const cfg = await loadConfig($, state)
-    if (!hasAnySlimEntry(cfg)) return next(e)
 
     const raw = (e as Record<string, unknown>).targets
     const targets = Array.isArray(raw)
